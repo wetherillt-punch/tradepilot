@@ -146,7 +146,10 @@ class RegimeEngine:
 
     def _fetch(self, ticker: str, period: str = "1y") -> pd.DataFrame:
         """Fetch data and compute EMAs for regime classification."""
-        tk = yf.Ticker(ticker)
+        import requests
+        session = requests.Session()
+        session.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        tk = yf.Ticker(ticker, session=session)
         df = tk.history(period=period, interval="1d")
 
         if df.empty:
@@ -215,7 +218,10 @@ class RegimeEngine:
 
         for name, etf in SECTOR_ETFS.items():
             try:
-                tk = yf.Ticker(etf)
+                import requests
+                session = requests.Session()
+                session.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                tk = yf.Ticker(etf, session=session)
                 hist = tk.history(period="1mo", interval="1d")
                 if hist.empty or len(hist) < 5:
                     continue

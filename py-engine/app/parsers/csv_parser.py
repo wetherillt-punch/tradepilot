@@ -210,8 +210,11 @@ def fetch_yfinance(
         interval: Bar interval - 1m, 5m, 15m, 30m, 1h, 1d, 1wk
     """
     import yfinance as yf
+    import requests
+    session = requests.Session()
+    session.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-    tk = yf.Ticker(ticker)
+    tk = yf.Ticker(ticker, session=session)
     df = tk.history(period=period, interval=interval)
 
     if df.empty:
