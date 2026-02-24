@@ -60,7 +60,7 @@ class LLMPipeline:
         # Extract all text blocks from the response (web search returns mixed content)
         text_parts = []
         for block in message.content:
-            if hasattr(block, "text"):
+            if hasattr(block, "text") and block.text is not None:
                 text_parts.append(block.text)
         return "\n".join(text_parts)
 
@@ -141,8 +141,8 @@ EARNINGS UPCOMING (auto-detected from market data):
 {earnings_str}
 
 SECTOR LEADERSHIP:
-- Leaders: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_leaders]) or 'N/A'}
-- Laggards: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_laggards]) or 'N/A'}
+- Leaders: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_leaders if s.performance_1w is not None]) or 'N/A'}
+- Laggards: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_laggards if s.performance_1w is not None]) or 'N/A'}
 
 After searching, provide:
 1. THIS WEEK'S DOMINANT NARRATIVE — What is the market focused on?
