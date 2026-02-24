@@ -146,16 +146,15 @@ class RegimeEngine:
 
     def _fetch(self, ticker: str, period: str = "1y") -> pd.DataFrame:
         """Fetch data and compute EMAs for regime classification."""
-        import requests
-        session = requests.Session()
-        session.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        tk = yf.Ticker(ticker, session=session)
-        df = tk.history(period=period, interval="1d")
+        try:
+            df = yf.download(ticker, period=period, interval="1d", progress=False, timeout=10)
+        except Exception:
+            df = pd.DataFrame()
 
         if df.empty:
             return pd.DataFrame()
 
-        df.columns = [c.lower() for c in df.columns]
+        df.columns = [c.lower() if isinstance(c, str) else c[0].lower() for c in df.columns]
         if "adj close" in df.columns:
             df = df.drop(columns=["adj close"], errors="ignore")
 
@@ -218,15 +217,16 @@ class RegimeEngine:
 
         for name, etf in SECTOR_ETFS.items():
             try:
-                import requests
-                session = requests.Session()
-                session.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                tk = yf.Ticker(etf, session=session)
-                hist = tk.history(period="1mo", interval="1d")
+                hist = yf.download(etf, period="1mo", interval="1d", progress=False, timeout=10)
                 if hist.empty or len(hist) < 5:
                     continue
 
-                close = hist["Close"] if "Close" in hist.columns else hist["close"]
+                if isinstance(hist.columns, pd.MultiIndex):
+                    hist.columns = [c[0].lower() for c in hist.columns]
+                else:
+                    hist.columns = [c.lower() for c in hist.columns]
+
+                close = hist["close"]
 
                 perf_1w = ((close.iloc[-1] / close.iloc[-5]) - 1) * 100 if len(close) >= 5 else None
                 perf_1m = ((close.iloc[-1] / close.iloc[0]) - 1) * 100

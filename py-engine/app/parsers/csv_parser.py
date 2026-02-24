@@ -210,15 +210,15 @@ def fetch_yfinance(
         interval: Bar interval - 1m, 5m, 15m, 30m, 1h, 1d, 1wk
     """
     import yfinance as yf
-    import requests
-    session = requests.Session()
-    session.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-    tk = yf.Ticker(ticker, session=session)
-    df = tk.history(period=period, interval=interval)
+    df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=10)
 
     if df.empty:
         raise ValueError(f"No data returned from yfinance for {ticker}")
+
+    # Handle multi-level columns from yf.download
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0] for c in df.columns]
 
     # Map interval string to Timeframe enum
     interval_map = {
