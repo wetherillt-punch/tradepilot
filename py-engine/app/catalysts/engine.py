@@ -212,9 +212,8 @@ class CatalystEngine:
 
     def _get_upcoming_earnings(self, watchlist: list[str]) -> list[EarningsEvent]:
         """
-        Fetch upcoming earnings for watchlist tickers + bellwethers.
-        Note: yfinance Ticker doesn't work in cloud environments.
         Returns empty list — LLM Stage 1 handles earnings via web search.
+        yfinance Ticker does not work in cloud environments.
         """
         return []
 
