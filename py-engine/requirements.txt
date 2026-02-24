@@ -13,3 +13,4 @@ python-dotenv==1.0.1
 scipy==1.14.1
 anthropic==0.34.0
 apscheduler==3.10.4
+curl_cffi>=0.7.0
