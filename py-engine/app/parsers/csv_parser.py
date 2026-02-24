@@ -210,8 +210,10 @@ def fetch_yfinance(
         interval: Bar interval - 1m, 5m, 15m, 30m, 1h, 1d, 1wk
     """
     import yfinance as yf
+    from curl_cffi import requests as curl_requests
+    session = curl_requests.Session(impersonate="chrome")
 
-    df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=10)
+    df = yf.download(ticker, period=period, interval=interval, progress=False, timeout=10, session=session)
 
     if df.empty:
         raise ValueError(f"No data returned from yfinance for {ticker}")

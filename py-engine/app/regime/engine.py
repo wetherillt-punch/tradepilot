@@ -147,7 +147,9 @@ class RegimeEngine:
     def _fetch(self, ticker: str, period: str = "1y") -> pd.DataFrame:
         """Fetch data and compute EMAs for regime classification."""
         try:
-            df = yf.download(ticker, period=period, interval="1d", progress=False, timeout=10)
+            from curl_cffi import requests as curl_requests
+            session = curl_requests.Session(impersonate="chrome")
+            df = yf.download(ticker, period=period, interval="1d", progress=False, timeout=10, session=session)
         except Exception:
             df = pd.DataFrame()
 
@@ -217,7 +219,9 @@ class RegimeEngine:
 
         for name, etf in SECTOR_ETFS.items():
             try:
-                hist = yf.download(etf, period="1mo", interval="1d", progress=False, timeout=10)
+                from curl_cffi import requests as curl_requests
+                session = curl_requests.Session(impersonate="chrome")
+                hist = yf.download(etf, period="1mo", interval="1d", progress=False, timeout=10, session=session)
                 if hist.empty or len(hist) < 5:
                     continue
 
