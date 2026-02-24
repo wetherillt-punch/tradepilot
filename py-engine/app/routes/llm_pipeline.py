@@ -44,6 +44,40 @@ class LLMPipeline:
         )
         return message.content[0].text
 
+    def _call_claude_with_search(self, system: str, user: str, max_tokens: int = 4096) -> str:
+        """
+        Claude API call with web search enabled.
+        Used for Stage 1 to pull real-time macro calendar, news, and geopolitical data.
+        Handles mixed response blocks (text + search results) safely.
+        """
+        try:
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{"role": "user", "content": user}],
+            )
+            # Extract only non-None text blocks from the response
+            text_parts = []
+            for block in message.content:
+                if hasattr(block, "text") and block.text is not None and isinstance(block.text, str):
+                    text_parts.append(block.text)
+
+            result = "\n".join(text_parts).strip()
+
+            # If web search returned nothing useful, fall back to regular call
+            if not result:
+                print("[LLM] Web search returned empty response, falling back to regular call")
+                return self._call_claude(system, user, max_tokens)
+
+            return result
+
+        except Exception as e:
+            # If web search fails for any reason, fall back gracefully
+            print(f"[LLM] Web search failed ({e}), falling back to regular call")
+            return self._call_claude(system, user, max_tokens)
+
     # ─── Session-Level Stages ─────────────────────────────────────────────
 
     def run_session_stages(
@@ -78,16 +112,19 @@ class LLMPipeline:
     ) -> str:
         """
         Stage 1: Analyze the catalyst environment for the week.
-        Uses Claude's training knowledge for macro context.
+        Uses web search for real-time macro calendar, news, and geopolitical data.
+        Falls back to training knowledge if search fails.
         """
 
         system = """You are a macro strategist at a professional trading desk. Your job is to 
 assess the current catalyst environment and its impact on trading conditions.
 
-Based on the current date and market data provided, analyze:
-1. Likely upcoming economic events for this week (CPI, PPI, FOMC, NFP, PCE, GDP, ISM, retail sales, etc.)
-2. Any major geopolitical situations that could be affecting markets
-3. The overall catalyst environment
+You MUST use web search to find:
+1. This week's economic calendar (CPI, PPI, FOMC, NFP, PCE, GDP, ISM, retail sales, etc.)
+2. Any active geopolitical situations affecting markets
+3. Recent market-moving news from the past 48 hours
+
+Search for "US economic calendar this week" and "market news today" proactively.
 
 You think in terms of risk events, historical analogs, and probability-weighted outcomes.
 You never hedge with vague language — you state your assessment directly.
@@ -114,6 +151,11 @@ Output format: Structured analysis with clear sections. No fluff."""
 
         user = f"""Analyze the catalyst environment for this week's trading.
 
+CRITICAL: Search the web for:
+- "US economic calendar this week" to find scheduled data releases
+- "stock market news today" for recent developments
+- "geopolitical risks markets" for active situations
+
 CURRENT DATE: {datetime.now().strftime('%Y-%m-%d %A')}
 
 MARKET SNAPSHOT (from quantitative engine — these are real numbers, not estimates):
@@ -130,15 +172,15 @@ SECTOR LEADERSHIP:
 - Leaders: {leaders_str}
 - Laggards: {laggards_str}
 
-Provide:
-1. THIS WEEK'S DOMINANT NARRATIVE — What is the market likely focused on?
-2. SCHEDULED MACRO EVENTS — List likely data releases and Fed events this week with expected impact
-3. GEOPOLITICAL ASSESSMENT — Any active situations and their closest historical analogs
+After searching, provide:
+1. THIS WEEK'S DOMINANT NARRATIVE — What is the market focused on?
+2. SCHEDULED MACRO EVENTS — List every data release and Fed event this week with dates and expected impact
+3. GEOPOLITICAL ASSESSMENT — Active situations with closest historical analogs
 4. POSITIONING BIAS — risk-on / risk-off / neutral / wait-for-catalyst, with reasoning
 5. SECTORS TO FAVOR/AVOID — Based on the catalyst environment
 6. HIDDEN CORRELATION RISKS — Bellwether earnings that could move seemingly unrelated positions"""
 
-        return self._call_claude(system, user, max_tokens=4000)
+        return self._call_claude_with_search(system, user, max_tokens=4000)
 
     def _stage2_regime_analysis(self, regime: MarketRegime, stage1_output: str) -> str:
         """Stage 2: Deep market regime analysis informed by catalyst context."""
