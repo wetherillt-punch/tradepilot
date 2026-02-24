@@ -1,6 +1,6 @@
 """
 TradePilot LLM Pipeline
-5-stage reasoning chain using Claude API (Opus).
+5-stage reasoning chain using Claude API.
 Stages 1-2 run once per session (cached). Stages 3-5 run per ticker.
 """
 
@@ -20,7 +20,7 @@ class LLMPipeline:
     Orchestrates the 5-stage LLM reasoning pipeline.
     
     Session-level (run once, cached):
-        Stage 1: Catalyst & Macro Context (with web search for real-time data)
+        Stage 1: Catalyst & Macro Context
         Stage 2: Market Regime Analysis
     
     Per-ticker:
@@ -29,13 +29,13 @@ class LLMPipeline:
         Stage 5: Trade Plan Synthesis
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-5-20250514"):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-5-20250929"):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.session_context: Optional[SessionContext] = None
 
     def _call_claude(self, system: str, user: str, max_tokens: int = 4096) -> str:
-        """Make a single Claude API call (no tools)."""
+        """Make a single Claude API call."""
         message = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -43,26 +43,6 @@ class LLMPipeline:
             messages=[{"role": "user", "content": user}],
         )
         return message.content[0].text
-
-    def _call_claude_with_search(self, system: str, user: str, max_tokens: int = 4096) -> str:
-        """
-        Make a Claude API call with web search enabled.
-        Used for Stage 1 to pull real-time macro calendar, news, and geopolitical data.
-        Claude will autonomously search when it needs current information.
-        """
-        message = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[{"role": "user", "content": user}],
-        )
-        # Extract all text blocks from the response (web search returns mixed content)
-        text_parts = []
-        for block in message.content:
-            if hasattr(block, "text") and block.text is not None:
-                text_parts.append(block.text)
-        return "\n".join(text_parts)
 
     # ─── Session-Level Stages ─────────────────────────────────────────────
 
@@ -98,18 +78,16 @@ class LLMPipeline:
     ) -> str:
         """
         Stage 1: Analyze the catalyst environment for the week.
-        Uses web search to pull real-time macro calendar, news, and geopolitical data.
+        Uses Claude's training knowledge for macro context.
         """
 
         system = """You are a macro strategist at a professional trading desk. Your job is to 
 assess the current catalyst environment and its impact on trading conditions.
 
-You MUST use web search to find:
-1. This week's economic calendar (CPI, PPI, FOMC, NFP, PCE, GDP, ISM, retail sales, etc.)
-2. Any active geopolitical situations affecting markets (conflicts, trade disputes, sanctions, political crises)
-3. Recent market-moving news from the past 48 hours
-
-Search for these proactively — do not rely on memory for dates or current events.
+Based on the current date and market data provided, analyze:
+1. Likely upcoming economic events for this week (CPI, PPI, FOMC, NFP, PCE, GDP, ISM, retail sales, etc.)
+2. Any major geopolitical situations that could be affecting markets
+3. The overall catalyst environment
 
 You think in terms of risk events, historical analogs, and probability-weighted outcomes.
 You never hedge with vague language — you state your assessment directly.
@@ -119,14 +97,22 @@ Output format: Structured analysis with clear sections. No fluff."""
         earnings_str = "\n".join([
             f"  - {e.ticker} on {e.date} {'(BELLWETHER — affects: ' + ', '.join(e.affected_tickers) + ')' if e.is_bellwether else ''}"
             for e in catalysts.earnings_this_week
-        ]) or "  None in the next 14 days"
+        ]) or "  None detected"
+
+        # Safe formatting for sector leaders/laggards
+        leaders_str = ', '.join([
+            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
+            for s in regime.sector_leaders
+            if s.performance_1w is not None
+        ]) or 'N/A'
+
+        laggards_str = ', '.join([
+            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
+            for s in regime.sector_laggards
+            if s.performance_1w is not None
+        ]) or 'N/A'
 
         user = f"""Analyze the catalyst environment for this week's trading.
-
-CRITICAL: Use web search to find:
-- This week's US economic calendar (search "economic calendar this week" or "US economic data releases this week")  
-- Any active geopolitical risks (search "geopolitical risks markets today" or "market moving news today")
-- Any major central bank decisions globally this week
 
 CURRENT DATE: {datetime.now().strftime('%Y-%m-%d %A')}
 
@@ -141,16 +127,13 @@ EARNINGS UPCOMING (auto-detected from market data):
 {earnings_str}
 
 SECTOR LEADERSHIP:
-- Leaders: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_leaders if s.performance_1w is not None]) or 'N/A'}
-- Laggards: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_laggards if s.performance_1w is not None]) or 'N/A'}
+- Leaders: {leaders_str}
+- Laggards: {laggards_str}
 
-After searching, provide:
-1. THIS WEEK'S DOMINANT NARRATIVE — What is the market focused on?
-2. SCHEDULED MACRO EVENTS — List every data release and Fed event this week with dates, expected impact (low/moderate/high/extreme), and historical context for how surprise outcomes typically move markets
-3. GEOPOLITICAL ASSESSMENT — For any active situations, identify the closest historical analog and estimate impact magnitude/duration/sector effects. Include:
-   - Classification (military conflict / trade war / banking crisis / political instability / sanctions)
-   - Historical analog with specific market data (e.g., "Russia-Ukraine 2022: SPY -6.2%, recovery 28 days")
-   - Which sectors are helped/hurt
+Provide:
+1. THIS WEEK'S DOMINANT NARRATIVE — What is the market likely focused on?
+2. SCHEDULED MACRO EVENTS — List likely data releases and Fed events this week with expected impact
+3. GEOPOLITICAL ASSESSMENT — Any active situations and their closest historical analogs
 4. POSITIONING BIAS — risk-on / risk-off / neutral / wait-for-catalyst, with reasoning
 5. SECTORS TO FAVOR/AVOID — Based on the catalyst environment
 6. HIDDEN CORRELATION RISKS — Bellwether earnings that could move seemingly unrelated positions"""
@@ -212,15 +195,10 @@ Provide:
         if not self.session_context:
             raise RuntimeError("Session context not initialized. Run run_session_stages() first.")
 
-        # Stage 3: Technical Analysis
         stage3 = self._stage3_technical(indicators, direction, trade_type)
-
-        # Stage 4: Risk Scenario Modeling
         stage4 = self._stage4_risk_scenarios(
             indicators, stage3, confidence, direction, correlated_bellwethers or []
         )
-
-        # Stage 5: Trade Plan Synthesis
         plan = self._stage5_synthesis(
             indicators, stage3, stage4, confidence,
             options_rec, trade_type, direction,
@@ -401,7 +379,6 @@ Produce the final trade plan as JSON. Be extremely specific with price levels.""
 
         # Parse the JSON response
         try:
-            # Extract JSON from response (handle markdown code blocks)
             json_str = raw
             if "```json" in raw:
                 json_str = raw.split("```json")[1].split("```")[0]
@@ -410,7 +387,6 @@ Produce the final trade plan as JSON. Be extremely specific with price levels.""
 
             plan_data = json.loads(json_str.strip())
         except (json.JSONDecodeError, IndexError):
-            # Fallback: create plan from raw text
             plan_data = {
                 "thesis": raw[:500],
                 "setup_type": "manual_review",
@@ -426,7 +402,6 @@ Produce the final trade plan as JSON. Be extremely specific with price levels.""
                 "historical_analog_score": 50,
             }
 
-        # Update historical analog score in confidence
         analog_score = plan_data.get("historical_analog_score", 50)
         confidence.historical_analog = min(100, max(0, analog_score))
 
@@ -494,7 +469,7 @@ Provide:
 Identify systematic patterns, biases, and areas for improvement.
 Be analytical and data-driven. Reference specific numbers."""
 
-        trades_str = json.dumps(trades[:20], indent=2, default=str)  # cap at 20 trades
+        trades_str = json.dumps(trades[:20], indent=2, default=str)
 
         user = f"""Review this week's trading performance:
 
@@ -512,3 +487,109 @@ Analyze:
 8. TOP 3 IMPROVEMENTS — Specific, actionable changes for next week"""
 
         return self._call_claude(system, user, max_tokens=2500)
+
+    # ─── Interactive Chat ─────────────────────────────────────────────────
+
+    def chat(
+        self,
+        messages: list[dict],
+        trade_plans: list[dict] = None,
+        performance_stats: dict = None,
+    ) -> str:
+        """
+        Interactive chat with full session context.
+        """
+        if not self.session_context:
+            raise RuntimeError("No active session. Initialize session first.")
+
+        context_parts = []
+
+        context_parts.append(f"""=== STAGE 1: CATALYST & MACRO CONTEXT ===
+{self.session_context.stage1_output}""")
+
+        context_parts.append(f"""=== STAGE 2: MARKET REGIME ANALYSIS ===
+{self.session_context.stage2_output}""")
+
+        regime = self.session_context.regime
+
+        leaders_str = ', '.join(
+            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
+            for s in regime.sector_leaders
+            if s.performance_1w is not None
+        ) or 'N/A'
+
+        laggards_str = ', '.join(
+            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
+            for s in regime.sector_laggards
+            if s.performance_1w is not None
+        ) or 'N/A'
+
+        context_parts.append(f"""=== CURRENT MARKET DATA ===
+SPY Regime: {regime.spy_regime.value}
+QQQ Regime: {regime.qqq_regime.value}
+VIX: {regime.vix} (Percentile: {regime.vix_percentile}%, Regime: {regime.volatility_regime})
+Term Structure: {regime.vix_term_structure}
+Market Bias: {regime.bias.value}
+Sector Leaders: {leaders_str}
+Sector Laggards: {laggards_str}""")
+
+        catalysts = self.session_context.catalysts
+        earnings_str = ", ".join(
+            f"{e.ticker} ({e.date}{'*' if e.is_bellwether else ''})"
+            for e in catalysts.earnings_this_week
+        ) or "None"
+        context_parts.append(f"""=== CATALYST ENVIRONMENT ===
+Event Risk: {catalysts.overall_event_risk.value}
+Earnings This Week: {earnings_str}
+(* = bellwether)""")
+
+        if trade_plans:
+            plans_summary = []
+            for p in trade_plans[:10]:
+                conf = p.get('confidence', {})
+                comp = conf.get('composite', '?') if isinstance(conf, dict) else '?'
+                plans_summary.append(
+                    f"- {p.get('ticker', '?')} | {p.get('direction', '?')} {p.get('trade_type', '?')} | "
+                    f"Entry: {p.get('entry_zone', '?')} | Stop: ${p.get('stop_loss', '?')} | "
+                    f"R:R {p.get('risk_reward_ratio', '?')}:1 | "
+                    f"Confidence: {comp} | "
+                    f"Thesis: {str(p.get('thesis', '?'))[:120]}"
+                )
+            context_parts.append("=== TRADE PLANS THIS SESSION ===\n" + "\n".join(plans_summary))
+
+        if performance_stats and performance_stats.get("total_trades", 0) > 0:
+            context_parts.append(f"""=== YOUR PERFORMANCE (last {performance_stats.get('period_days', 30)} days) ===
+Total Trades: {performance_stats.get('total_trades')}
+Win Rate: {performance_stats.get('win_rate')}%
+Avg Win: +{performance_stats.get('avg_win')}% | Avg Loss: {performance_stats.get('avg_loss')}%
+Profit Factor: {performance_stats.get('profit_factor')}
+Total P/L: {performance_stats.get('total_pnl_pct')}%""")
+
+        full_context = "\n\n".join(context_parts)
+
+        system = f"""You are a senior trading strategist having an interactive conversation with a trader.
+You have complete access to today's session analysis, market data, and the trader's plans and performance.
+
+YOUR CONTEXT (reference this to answer questions):
+{full_context}
+
+RULES:
+- Be direct and specific. When you reference a level, state the price. When you cite data, use the numbers.
+- If asked about a specific trade plan, reference the actual thesis, levels, and confidence scores.
+- If asked "what if" scenarios, reason through them using the indicator and regime data you have.
+- If asked about risk, quantify it using ATR, VIX, and historical analogs from the catalyst analysis.
+- If the trader asks about adjusting a plan (moving stops, changing targets), evaluate whether the
+  adjustment makes sense given the technical and catalyst context.
+- If you don't have enough data to answer, say so clearly rather than guessing.
+- Keep responses focused and actionable. You're at a trading desk, not writing an essay."""
+
+        api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2000,
+            system=system,
+            messages=api_messages,
+        )
+
+        return response.content[0].text

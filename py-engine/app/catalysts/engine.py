@@ -13,6 +13,7 @@ from app.models.schemas import (
 
 
 # ─── Major Bellwether Tickers ─────────────────────────────────────────────────
+# When these report, entire sectors move
 
 BELLWETHERS = {
     "AAPL": {"sector": "Technology", "affects": ["MSFT", "GOOGL", "META", "QQQ"]},
@@ -32,6 +33,7 @@ BELLWETHERS = {
 
 
 # ─── Historical Macro Event Impact Data ───────────────────────────────────────
+# Average SPY reaction (absolute %) to surprise outcomes
 
 MACRO_EVENT_PROFILES = {
     "CPI": {
@@ -193,18 +195,24 @@ class CatalystEngine:
     def analyze(self, watchlist: list[str] = None) -> CatalystContext:
         """
         Build the full catalyst context.
-        Macro calendar and geopolitical events are enriched by LLM Stage 1.
+        
+        Note: Macro calendar and geopolitical events will be enriched
+        by the LLM pipeline (Stage 1) using web search for real-time data.
+        This engine provides the structured framework and historical context.
         """
         watchlist = watchlist or []
 
-        # Get earnings data — gracefully handles failures
+        # Get earnings data for watchlist + bellwethers
         earnings = self._get_upcoming_earnings(watchlist)
 
+        # Build base catalyst context
+        # The macro calendar and geopolitical events will be populated
+        # by the LLM's web search in Stage 1
         context = CatalystContext(
             timestamp=datetime.utcnow(),
-            macro_events_this_week=[],
+            macro_events_this_week=[],  # populated by LLM Stage 1 via web search
             earnings_this_week=earnings,
-            active_geopolitical=[],
+            active_geopolitical=[],  # populated by LLM Stage 1 via web search
             overall_event_risk=self._assess_base_risk(earnings),
         )
 
@@ -212,65 +220,10 @@ class CatalystEngine:
 
     def _get_upcoming_earnings(self, watchlist: list[str]) -> list[EarningsEvent]:
         """
-        Returns empty list — LLM Stage 1 handles earnings via web search.
-        yfinance Ticker does not work in cloud environments.
+        Earnings detection disabled in cloud — yfinance Ticker API blocked.
+        LLM Stage 1 handles earnings awareness via its training knowledge.
         """
         return []
-
-                cal = tk.calendar
-
-                if cal is None:
-                    continue
-
-                # Handle empty check for both dict and DataFrame
-                if isinstance(cal, dict):
-                    if not cal:
-                        continue
-                elif hasattr(cal, "empty") and cal.empty:
-                    continue
-
-                # yfinance calendar format varies - handle both dict and DataFrame
-                if isinstance(cal, dict):
-                    earnings_date = cal.get("Earnings Date")
-                    if earnings_date and len(earnings_date) > 0:
-                        ed = earnings_date[0]
-                        if isinstance(ed, str):
-                            ed = datetime.strptime(ed, "%Y-%m-%d").date()
-                        elif hasattr(ed, "date"):
-                            ed = ed.date()
-                    else:
-                        continue
-                else:
-                    # DataFrame format
-                    if "Earnings Date" in cal.columns:
-                        ed_val = cal["Earnings Date"].iloc[0]
-                        if hasattr(ed_val, "date"):
-                            ed = ed_val.date()
-                        else:
-                            continue
-                    else:
-                        continue
-
-                # Only include if within next 14 days
-                today = date.today()
-                if ed < today or ed > today + timedelta(days=14):
-                    continue
-
-                is_bell = ticker in BELLWETHERS
-                affected = BELLWETHERS.get(ticker, {}).get("affects", [])
-
-                earnings.append(EarningsEvent(
-                    ticker=ticker,
-                    date=ed,
-                    is_bellwether=is_bell,
-                    affected_tickers=affected,
-                ))
-
-            except Exception as e:
-                print(f"[Catalyst] {ticker} earnings lookup failed: {e}")
-                continue
-
-        return sorted(earnings, key=lambda e: e.date)
 
     def _assess_base_risk(self, earnings: list[EarningsEvent]) -> EventRisk:
         """Assess base risk level from earnings calendar alone."""
