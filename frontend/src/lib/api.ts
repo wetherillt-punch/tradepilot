@@ -1,233 +1,115 @@
-/**
- * TradePilot API Client
- * Communicates with the Python backend on Railway.
- */
+// src/utils/api.ts
+import axios from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://fearless-achievement-production.up.railway.app/api';
 
-class TradePilotAPI {
-  private baseUrl: string;
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
 
-  constructor() {
-    this.baseUrl = API_URL;
+// Add auth token to requests if available
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('providerToken');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
+  return config;
+});
 
-  private async fetch<T>(path: string, options?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-      },
+// ============================================================================
+// PROVIDERS API
+// ============================================================================
+
+export const providersAPI = {
+  getById: (id: string) => api.get(`/providers/${id}`),
+  update: (id: string, data: any) => api.put(`/providers/${id}`, data),
+  updateStatus: (id: string, status: string) => api.patch(`/providers/${id}/status`, { status }),
+};
+
+// ============================================================================
+// BOOKINGS API
+// ============================================================================
+
+export const bookingsAPI = {
+  // Get provider's pending booking requests
+  getPending: async (providerId: string) => {
+    const response = await api.get(`/bookings/provider/${providerId}/pending`);
+    return response.data;
+  },
+
+  // Get all provider bookings with filters
+  getAll: async (providerId: string, params: {
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    limit?: number;
+    skip?: number;
+  } = {}) => {
+    const queryParams = new URLSearchParams();
+    if (params.status) queryParams.append('status', params.status);
+    if (params.startDate) queryParams.append('startDate', params.startDate);
+    if (params.endDate) queryParams.append('endDate', params.endDate);
+    if (params.limit) queryParams.append('limit', params.limit.toString());
+    if (params.skip) queryParams.append('skip', params.skip.toString());
+    
+    const query = queryParams.toString();
+    const response = await api.get(`/bookings/provider/${providerId}${query ? '?' + query : ''}`);
+    return response.data;
+  },
+
+  // Get single booking
+  getById: async (bookingId: string) => {
+    const response = await api.get(`/bookings/${bookingId}`);
+    return response.data;
+  },
+
+  // Provider confirms booking
+  confirm: async (bookingId: string, providerId: string) => {
+    const response = await api.post(`/bookings/${bookingId}/confirm`, {}, {
+      headers: { 'x-provider-id': providerId }
     });
+    return response.data;
+  },
 
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(error.detail || `API Error: ${res.status}`);
-    }
-
-    return res.json();
-  }
-
-  // ─── Session ─────────────────────────────────────────────────────────
-
-  async initSession(watchlist: string[] = []) {
-    return this.fetch<SessionResponse>("/api/session/init", {
-      method: "POST",
-      body: JSON.stringify(watchlist),
+  // Provider declines booking
+  decline: async (bookingId: string, providerId: string, reason: string) => {
+    const response = await api.post(`/bookings/${bookingId}/decline`, { reason }, {
+      headers: { 'x-provider-id': providerId }
     });
-  }
+    return response.data;
+  },
 
-  // ─── Analysis ────────────────────────────────────────────────────────
-
-  async analyzeWithUpload(
-    file: File,
-    ticker: string,
-    tradeType: string = "swing",
-    direction: string = "bullish",
-    timeframe: string = "1d",
-    source: string = "auto"
-  ) {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("ticker", ticker);
-    formData.append("trade_type", tradeType);
-    formData.append("direction", direction);
-    formData.append("timeframe", timeframe);
-    formData.append("source", source);
-
-    const res = await fetch(`${this.baseUrl}/api/analyze/upload`, {
-      method: "POST",
-      body: formData,
+  // Provider proposes reschedule
+  reschedule: async (bookingId: string, providerId: string, proposedStart: string, message?: string) => {
+    const response = await api.post(`/bookings/${bookingId}/reschedule`, {
+      proposedStart,
+      message
+    }, {
+      headers: { 'x-provider-id': providerId }
     });
+    return response.data;
+  },
 
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(error.detail || `API Error: ${res.status}`);
-    }
-
-    return res.json() as Promise<AnalysisResponse>;
+  // Get booking history/audit trail
+  getHistory: async (bookingId: string) => {
+    const response = await api.get(`/bookings/${bookingId}/history`);
+    return response.data;
   }
+};
 
-  async analyzeQuick(ticker: string, tradeType: string = "swing", direction: string = "bullish") {
-    return this.fetch<AnalysisResponse>("/api/analyze/quick", {
-      method: "POST",
-      body: JSON.stringify({
-        ticker,
-        trade_type: tradeType,
-        direction,
-      }),
-    });
-  }
+// ============================================================================
+// AUTH API
+// ============================================================================
 
-  // ─── Journal ─────────────────────────────────────────────────────────
+export const authAPI = {
+  login: (email: string, password: string) => api.post('/auth/provider/login', { email, password }),
+  logout: () => {
+    localStorage.removeItem('providerToken');
+    localStorage.removeItem('providerId');
+  },
+};
 
-  async logTrade(entry: JournalEntry) {
-    return this.fetch<{ id: string; debrief: string }>("/api/journal/log", {
-      method: "POST",
-      body: JSON.stringify(entry),
-    });
-  }
-
-  async getJournal(limit: number = 50) {
-    return this.fetch<{ entries: any[] }>(`/api/journal?limit=${limit}`);
-  }
-
-  // ─── Performance ─────────────────────────────────────────────────────
-
-  async getPerformance(days: number = 30) {
-    return this.fetch<PerformanceStats>(`/api/performance?days=${days}`);
-  }
-
-  async getWeeklyDigest() {
-    return this.fetch<{ digest: string }>("/api/performance/weekly-digest", {
-      method: "POST",
-    });
-  }
-
-  // ─── Plans ───────────────────────────────────────────────────────────
-
-  async getPlans(limit: number = 20) {
-    return this.fetch<{ plans: any[] }>(`/api/plans?limit=${limit}`);
-  }
-
-  async getPlan(planId: string) {
-    return this.fetch<any>(`/api/plans/${planId}`);
-  }
-
-  // ─── Catalysts ───────────────────────────────────────────────────────
-
-  async getBellwethers() {
-    return this.fetch<Record<string, any>>("/api/catalysts/bellwethers");
-  }
-
-  async getMacroProfiles() {
-    return this.fetch<Record<string, any>>("/api/catalysts/macro-profiles");
-  }
-
-  async getGeoTemplates() {
-    return this.fetch<Record<string, any>>("/api/catalysts/geo-templates");
-  }
-
-  // ─── Health ──────────────────────────────────────────────────────────
-
-  async health() {
-    return this.fetch<{ status: string; timestamp: string }>("/health");
-  }
-}
-
-// ─── Types ─────────────────────────────────────────────────────────────────
-
-export interface SessionResponse {
-  session_id: string;
-  regime: {
-    spy: string;
-    qqq: string;
-    vix: number;
-    vix_percentile: number;
-    volatility: string;
-    bias: string;
-    sectors: {
-      leaders: Array<{ sector: string; etf: string; perf: number }>;
-      laggards: Array<{ sector: string; etf: string; perf: number }>;
-    };
-  };
-  catalysts: {
-    earnings_count: number;
-    earnings: Array<{ ticker: string; date: string; bellwether: boolean }>;
-    event_risk: string;
-  };
-  stage1_analysis: string;
-  stage2_analysis: string;
-}
-
-export interface AnalysisResponse {
-  plan: {
-    id: string;
-    ticker: string;
-    trade_type: string;
-    direction: string;
-    thesis: string;
-    setup_type: string;
-    entry_zone: string;
-    stop_loss: number;
-    stop_loss_rationale: string;
-    targets: Array<{ price: number; pct_exit: number; rationale: string }>;
-    risk_reward_ratio: number;
-    thesis_invalidation: string;
-    catalyst_awareness: string;
-    correlation_warnings: string[];
-    market_regime_summary: string;
-    options_rec?: {
-      strategy: string;
-      rationale: string;
-      structure: string;
-    };
-  };
-  indicators: Record<string, any>;
-  confidence: {
-    composite: number;
-    rating: string;
-    breakdown: {
-      trend: number;
-      momentum: number;
-      volume: number;
-      volatility: number;
-      regime: number;
-      catalyst: number;
-      historical: number;
-      personal: number;
-    };
-  };
-}
-
-export interface JournalEntry {
-  trade_plan_id?: string;
-  ticker: string;
-  trade_type: string;
-  direction: string;
-  actual_entry: number;
-  actual_exit: number;
-  position_size?: number;
-  pnl_dollar?: number;
-  pnl_percent: number;
-  followed_plan: boolean;
-  notes: string;
-}
-
-export interface PerformanceStats {
-  period_days: number;
-  total_trades: number;
-  win_rate: number;
-  avg_win: number;
-  avg_loss: number;
-  profit_factor: number;
-  total_pnl_pct: number;
-  best_trade: number;
-  worst_trade: number;
-  setup_breakdown: Record<string, { wins: number; losses: number; total_pnl: number }>;
-}
-
-// Export singleton
-export const api = new TradePilotAPI();
 export default api;

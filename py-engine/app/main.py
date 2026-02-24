@@ -37,7 +37,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://*.vercel.app",
+        os.getenv("FRONTEND_URL", "http://localhost:3000"),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -163,8 +167,6 @@ async def init_session(watchlist: list[str] = []):
         }
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -243,7 +245,7 @@ async def analyze_with_upload(
 
         # Save to MongoDB
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict.copy())
+        plan_id = await db.save_trade_plan(plan_dict)
         plan_dict["id"] = plan_id
 
         return {
@@ -322,7 +324,7 @@ async def analyze_quick(req: QuickAnalyzeRequest):
         )
 
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict.copy())
+        plan_id = await db.save_trade_plan(plan_dict)
         plan_dict["id"] = plan_id
 
         return {
@@ -427,7 +429,88 @@ async def get_plan(plan_id: str):
     return plan
 
 
+# ─── Chart Data ───────────────────────────────────────────────────────────────
+
+@app.get("/api/chart/{ticker}")
+async def get_chart_data(ticker: str, period: str = "6mo", interval: str = "1d"):
+    """
+    Return OHLCV data for lightweight-charts candlestick rendering.
+    Returns array of {time, open, high, low, close, volume}.
+    """
+    from app.data.yahoo_fetcher import fetch_ticker_data
+    try:
+        df = fetch_ticker_data(ticker.upper(), period=period, interval=interval)
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+
+        candles = []
+        volumes = []
+        for dt, row in df.iterrows():
+            time_str = dt.strftime("%Y-%m-%d")
+            candles.append({
+                "time": time_str,
+                "open": round(float(row["open"]), 2),
+                "high": round(float(row["high"]), 2),
+                "low": round(float(row["low"]), 2),
+                "close": round(float(row["close"]), 2),
+            })
+            volumes.append({
+                "time": time_str,
+                "value": int(row["volume"]),
+                "color": "rgba(34,197,94,0.3)" if row["close"] >= row["open"] else "rgba(239,68,68,0.3)",
+            })
+
+        return {"candles": candles, "volumes": volumes, "ticker": ticker.upper()}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ─── Catalyst Data ────────────────────────────────────────────────────────────
+
+# ─── Chat ─────────────────────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    messages: list[dict]  # [{"role": "user"|"assistant", "content": "..."}]
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    """
+    Interactive chat with full session context.
+    Requires active session. Loads recent trade plans and performance
+    automatically so the LLM has full awareness.
+    """
+    try:
+        if not llm_pipeline.session_context:
+            raise HTTPException(
+                status_code=400,
+                detail="No active session. Call /api/session/init first."
+            )
+
+        # Load recent plans for context
+        plans = await db.get_recent_plans(10)
+
+        # Load performance stats for context
+        perf = await db.get_performance_stats(30)
+
+        # Run chat
+        response = llm_pipeline.chat(
+            messages=req.messages,
+            trade_plans=plans,
+            performance_stats=perf,
+        )
+
+        return {"response": response}
+
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Catalyst Data (continued) ───────────────────────────────────────────────
 
 @app.get("/api/catalysts/bellwethers")
 async def get_bellwethers():
