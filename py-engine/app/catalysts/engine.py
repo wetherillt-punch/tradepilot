@@ -4,7 +4,6 @@ Identifies, categorizes, and historically contextualizes market catalysts.
 Three components: Macro Calendar, Earnings Tracker, Geopolitical Monitor.
 """
 
-import yfinance as yf
 from datetime import datetime, date, timedelta
 from typing import Optional
 from app.models.schemas import (
@@ -14,7 +13,6 @@ from app.models.schemas import (
 
 
 # ─── Major Bellwether Tickers ─────────────────────────────────────────────────
-# When these report, entire sectors move
 
 BELLWETHERS = {
     "AAPL": {"sector": "Technology", "affects": ["MSFT", "GOOGL", "META", "QQQ"]},
@@ -34,7 +32,6 @@ BELLWETHERS = {
 
 
 # ─── Historical Macro Event Impact Data ───────────────────────────────────────
-# Average SPY reaction (absolute %) to surprise outcomes
 
 MACRO_EVENT_PROFILES = {
     "CPI": {
@@ -196,24 +193,18 @@ class CatalystEngine:
     def analyze(self, watchlist: list[str] = None) -> CatalystContext:
         """
         Build the full catalyst context.
-        
-        Note: Macro calendar and geopolitical events will be enriched
-        by the LLM pipeline (Stage 1) using web search for real-time data.
-        This engine provides the structured framework and historical context.
+        Macro calendar and geopolitical events are enriched by LLM Stage 1.
         """
         watchlist = watchlist or []
 
-        # Get earnings data for watchlist + bellwethers
+        # Get earnings data — gracefully handles failures
         earnings = self._get_upcoming_earnings(watchlist)
 
-        # Build base catalyst context
-        # The macro calendar and geopolitical events will be populated
-        # by the LLM's web search in Stage 1
         context = CatalystContext(
             timestamp=datetime.utcnow(),
-            macro_events_this_week=[],  # populated by LLM Stage 1 via web search
+            macro_events_this_week=[],
             earnings_this_week=earnings,
-            active_geopolitical=[],  # populated by LLM Stage 1 via web search
+            active_geopolitical=[],
             overall_event_risk=self._assess_base_risk(earnings),
         )
 
@@ -226,10 +217,25 @@ class CatalystEngine:
 
         for ticker in all_tickers:
             try:
-                tk = yf.Ticker(ticker)
+                # Use curl_cffi session to bypass cloud IP blocking
+                import yfinance as yf
+                try:
+                    from curl_cffi import requests as curl_requests
+                    session = curl_requests.Session(impersonate="chrome")
+                    tk = yf.Ticker(ticker, session=session)
+                except (ImportError, Exception):
+                    tk = yf.Ticker(ticker)
+
                 cal = tk.calendar
 
-                if cal is None or cal.empty:
+                if cal is None:
+                    continue
+
+                # Handle empty check for both dict and DataFrame
+                if isinstance(cal, dict):
+                    if not cal:
+                        continue
+                elif hasattr(cal, "empty") and cal.empty:
                     continue
 
                 # yfinance calendar format varies - handle both dict and DataFrame
@@ -259,7 +265,6 @@ class CatalystEngine:
                 if ed < today or ed > today + timedelta(days=14):
                     continue
 
-                # Check if bellwether
                 is_bell = ticker in BELLWETHERS
                 affected = BELLWETHERS.get(ticker, {}).get("affects", [])
 
@@ -270,7 +275,8 @@ class CatalystEngine:
                     affected_tickers=affected,
                 ))
 
-            except Exception:
+            except Exception as e:
+                print(f"[Catalyst] {ticker} earnings lookup failed: {e}")
                 continue
 
         return sorted(earnings, key=lambda e: e.date)

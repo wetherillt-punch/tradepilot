@@ -4,7 +4,6 @@ Classifies the current market environment using SPY, QQQ, VIX, and sector data.
 Runs once per session and is cached.
 """
 
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -13,7 +12,7 @@ from app.models.schemas import (
     MarketRegime, RegimeType, Direction, SectorRotation
 )
 from app.indicators.engine import IndicatorEngine
-from app.models.schemas import TickerData, Timeframe, OHLCVBar
+from app.data.yahoo_fetcher import fetch_ticker_data
 
 
 # Sector ETFs for rotation analysis
@@ -46,7 +45,7 @@ class RegimeEngine:
     def analyze(self) -> MarketRegime:
         """Run full regime analysis. Returns cached-ready MarketRegime."""
 
-        # Fetch broad market data
+        # Fetch broad market data using direct Yahoo API
         spy = self._fetch("SPY", period="1y")
         qqq = self._fetch("QQQ", period="1y")
         vix = self._fetch("^VIX", period="1y")
@@ -60,10 +59,10 @@ class RegimeEngine:
         qqq_regime = self._classify_regime(qqq)
 
         # SPY vs EMAs
-        spy_latest = spy.iloc[-1]
+        spy_latest = spy.iloc[-1] if len(spy) > 0 else pd.Series()
         spy_vs_emas = {}
         for ema_col in ["ema_9", "ema_20", "ema_50", "ema_200"]:
-            if pd.notna(spy_latest.get(ema_col)):
+            if ema_col in spy_latest.index and pd.notna(spy_latest.get(ema_col)):
                 spy_vs_emas[ema_col] = "above" if spy_latest["close"] > spy_latest[ema_col] else "below"
 
         # Market direction
@@ -135,7 +134,7 @@ class RegimeEngine:
             qqq_regime=qqq_regime,
             spy_vs_emas=spy_vs_emas,
             market_direction=market_dir,
-            vix=round(vix_current, 2),
+            vix=round(float(vix_current), 2),
             vix_percentile=round(vix_percentile, 1),
             vix_term_structure=vix_term,
             volatility_regime=vol_regime,
@@ -146,19 +145,10 @@ class RegimeEngine:
 
     def _fetch(self, ticker: str, period: str = "1y") -> pd.DataFrame:
         """Fetch data and compute EMAs for regime classification."""
-        try:
-            from curl_cffi import requests as curl_requests
-            session = curl_requests.Session(impersonate="chrome")
-            df = yf.download(ticker, period=period, interval="1d", progress=False, timeout=10, session=session)
-        except Exception:
-            df = pd.DataFrame()
+        df = fetch_ticker_data(ticker, period=period, interval="1d")
 
         if df.empty:
             return pd.DataFrame()
-
-        df.columns = [c.lower() if isinstance(c, str) else c[0].lower() for c in df.columns]
-        if "adj close" in df.columns:
-            df = df.drop(columns=["adj close"], errors="ignore")
 
         # Compute EMAs
         df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
@@ -219,16 +209,9 @@ class RegimeEngine:
 
         for name, etf in SECTOR_ETFS.items():
             try:
-                from curl_cffi import requests as curl_requests
-                session = curl_requests.Session(impersonate="chrome")
-                hist = yf.download(etf, period="1mo", interval="1d", progress=False, timeout=10, session=session)
+                hist = fetch_ticker_data(etf, period="1mo", interval="1d")
                 if hist.empty or len(hist) < 5:
                     continue
-
-                if isinstance(hist.columns, pd.MultiIndex):
-                    hist.columns = [c[0].lower() for c in hist.columns]
-                else:
-                    hist.columns = [c.lower() for c in hist.columns]
 
                 close = hist["close"]
 
@@ -237,7 +220,7 @@ class RegimeEngine:
 
                 # Relative strength vs SPY
                 rel_str = None
-                if self.spy_data is not None and len(self.spy_data) >= len(hist):
+                if self.spy_data is not None and len(self.spy_data) >= 5:
                     spy_perf = ((self.spy_data["close"].iloc[-1] / self.spy_data["close"].iloc[-5]) - 1) * 100
                     rel_str = round(perf_1w - spy_perf, 2) if perf_1w else None
 
