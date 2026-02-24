@@ -155,7 +155,7 @@ After searching, provide:
 5. SECTORS TO FAVOR/AVOID — Based on the catalyst environment
 6. HIDDEN CORRELATION RISKS — Bellwether earnings that could move seemingly unrelated positions"""
 
-        return self._call_claude_with_search(system, user, max_tokens=4000)
+        return self._call_claude(system, user, max_tokens=4000)
 
     def _stage2_regime_analysis(self, regime: MarketRegime, stage1_output: str) -> str:
         """Stage 2: Deep market regime analysis informed by catalyst context."""
