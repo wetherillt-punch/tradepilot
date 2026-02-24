@@ -211,20 +211,12 @@ class CatalystEngine:
         return context
 
     def _get_upcoming_earnings(self, watchlist: list[str]) -> list[EarningsEvent]:
-        """Fetch upcoming earnings for watchlist tickers + bellwethers."""
-        earnings = []
-        all_tickers = list(set(watchlist + list(BELLWETHERS.keys())))
-
-        for ticker in all_tickers:
-            try:
-                # Use curl_cffi session to bypass cloud IP blocking
-                import yfinance as yf
-                try:
-                    from curl_cffi import requests as curl_requests
-                    session = curl_requests.Session(impersonate="chrome")
-                    tk = yf.Ticker(ticker, session=session)
-                except (ImportError, Exception):
-                    tk = yf.Ticker(ticker)
+        """
+        Fetch upcoming earnings for watchlist tickers + bellwethers.
+        Note: yfinance Ticker doesn't work in cloud environments.
+        Returns empty list — LLM Stage 1 handles earnings via web search.
+        """
+        return []
 
                 cal = tk.calendar
 
