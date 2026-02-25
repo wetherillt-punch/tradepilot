@@ -26,6 +26,7 @@ export default function RootLayout({
                   <NavLink href="/" label="Dashboard" />
                   <NavLink href="/analyze" label="Analyze" />
                   <NavLink href="/journal" label="Journal" />
+                  <NavLink href="/chat" label="Chat" />
                   <NavLink href="/performance" label="Performance" />
                 </div>
               </div>
