@@ -358,5 +358,6 @@ class SessionContext(BaseModel):
     expires_at: Optional[datetime] = None
     regime: MarketRegime
     catalysts: CatalystContext
+    cross_asset_data: Optional[dict] = None  # bonds, credit, commodities, dollar, breadth
     stage1_output: str = ""  # raw LLM output from Stage 1
     stage2_output: str = ""  # raw LLM output from Stage 2

@@ -22,6 +22,7 @@ from app.regime.engine import RegimeEngine
 from app.catalysts.engine import CatalystEngine
 from app.options.strategy import OptionsStrategyEngine
 from app.routes.llm_pipeline import LLMPipeline
+from app.data.cross_asset import fetch_cross_asset_data
 from app.models.schemas import (
     Timeframe, TradeType, Direction, EventRisk
 )
@@ -37,8 +38,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict in production
-    # allow_origins_OLD=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://*.vercel.app",
+        os.getenv("FRONTEND_URL", "http://localhost:3000"),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -123,11 +127,15 @@ async def init_session(watchlist: list[str] = []):
         # Run catalyst engine (fetches earnings calendar)
         catalysts = catalyst_engine.analyze(watchlist)
 
-        # Run LLM Stages 1 & 2
+        # Fetch cross-asset data (bonds, credit, commodities, dollar, breadth)
+        cross_asset = fetch_cross_asset_data()
+
+        # Run LLM Stages 1 & 2 (now with cross-asset context)
         session = llm_pipeline.run_session_stages(
             regime=regime,
             catalysts=catalysts,
             session_id=session_id,
+            cross_asset_data=cross_asset,
         )
 
         # Cache session in MongoDB
@@ -135,10 +143,15 @@ async def init_session(watchlist: list[str] = []):
             "session_id": session_id,
             "regime": regime.model_dump(mode="json"),
             "catalysts": catalysts.model_dump(mode="json"),
+            "cross_asset": cross_asset,
             "stage1_output": session.stage1_output,
             "stage2_output": session.stage2_output,
         }
         await db.cache_session(session_data)
+
+        # Build cross-asset summary for response
+        ca_instruments = cross_asset.get("instruments", {})
+        ca_signals = cross_asset.get("signals", [])
 
         return {
             "session_id": session_id,
@@ -153,6 +166,11 @@ async def init_session(watchlist: list[str] = []):
                     "leaders": [{"sector": s.sector, "etf": s.etf, "perf": s.performance_1w} for s in regime.sector_leaders],
                     "laggards": [{"sector": s.sector, "etf": s.etf, "perf": s.performance_1w} for s in regime.sector_laggards],
                 }
+            },
+            "cross_asset": {
+                "instruments": {k: {"price": v["price"], "change_1w": v["change_1w"], "trend": v["trend"], "name": v["name"]}
+                                for k, v in ca_instruments.items()},
+                "signals": [{"signal": s["signal"], "severity": s["severity"]} for s in ca_signals],
             },
             "catalysts": {
                 "earnings_count": len(catalysts.earnings_this_week),
@@ -242,8 +260,8 @@ async def analyze_with_upload(
 
         # Save to MongoDB
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict.copy())
-        plan_dict["id"] = str(plan_id)
+        plan_id = await db.save_trade_plan(plan_dict)
+        plan_dict["id"] = plan_id
 
         return {
             "plan": plan_dict,
@@ -321,8 +339,8 @@ async def analyze_quick(req: QuickAnalyzeRequest):
         )
 
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict.copy())
-        plan_dict["id"] = str(plan_id)
+        plan_id = await db.save_trade_plan(plan_dict)
+        plan_dict["id"] = plan_id
 
         return {
             "plan": plan_dict,

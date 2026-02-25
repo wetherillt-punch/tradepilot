@@ -1,6 +1,6 @@
 """
 TradePilot LLM Pipeline
-5-stage reasoning chain using Claude API.
+5-stage reasoning chain using Claude API (Opus).
 Stages 1-2 run once per session (cached). Stages 3-5 run per ticker.
 """
 
@@ -20,7 +20,7 @@ class LLMPipeline:
     Orchestrates the 5-stage LLM reasoning pipeline.
     
     Session-level (run once, cached):
-        Stage 1: Catalyst & Macro Context
+        Stage 1: Catalyst & Macro Context (with web search for real-time data)
         Stage 2: Market Regime Analysis
     
     Per-ticker:
@@ -29,13 +29,13 @@ class LLMPipeline:
         Stage 5: Trade Plan Synthesis
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-5-20250929"):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-5-20250514"):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.session_context: Optional[SessionContext] = None
 
     def _call_claude(self, system: str, user: str, max_tokens: int = 4096) -> str:
-        """Make a single Claude API call."""
+        """Make a single Claude API call (no tools)."""
         message = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -46,37 +46,23 @@ class LLMPipeline:
 
     def _call_claude_with_search(self, system: str, user: str, max_tokens: int = 4096) -> str:
         """
-        Claude API call with web search enabled.
+        Make a Claude API call with web search enabled.
         Used for Stage 1 to pull real-time macro calendar, news, and geopolitical data.
-        Handles mixed response blocks (text + search results) safely.
+        Claude will autonomously search when it needs current information.
         """
-        try:
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system,
-                tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                messages=[{"role": "user", "content": user}],
-            )
-            # Extract only non-None text blocks from the response
-            text_parts = []
-            for block in message.content:
-                if hasattr(block, "text") and block.text is not None and isinstance(block.text, str):
-                    text_parts.append(block.text)
-
-            result = "\n".join(text_parts).strip()
-
-            # If web search returned nothing useful, fall back to regular call
-            if not result:
-                print("[LLM] Web search returned empty response, falling back to regular call")
-                return self._call_claude(system, user, max_tokens)
-
-            return result
-
-        except Exception as e:
-            # If web search fails for any reason, fall back gracefully
-            print(f"[LLM] Web search failed ({e}), falling back to regular call")
-            return self._call_claude(system, user, max_tokens)
+        message = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": user}],
+        )
+        # Extract all text blocks from the response (web search returns mixed content)
+        text_parts = []
+        for block in message.content:
+            if hasattr(block, "text"):
+                text_parts.append(block.text)
+        return "\n".join(text_parts)
 
     # ─── Session-Level Stages ─────────────────────────────────────────────
 
@@ -85,22 +71,30 @@ class LLMPipeline:
         regime: MarketRegime,
         catalysts: CatalystContext,
         session_id: str = "default",
+        cross_asset_data: dict = None,
     ) -> SessionContext:
         """
         Run Stages 1-2 once per session. Results are cached and reused
         for all ticker analyses in this session.
         """
 
-        # Stage 1: Catalyst & Macro Context
-        stage1_output = self._stage1_catalyst_context(regime, catalysts)
+        # Format cross-asset data for LLM consumption
+        cross_asset_text = ""
+        if cross_asset_data:
+            from app.data.cross_asset import format_cross_asset_for_llm
+            cross_asset_text = format_cross_asset_for_llm(cross_asset_data)
 
-        # Stage 2: Market Regime Deep Analysis
-        stage2_output = self._stage2_regime_analysis(regime, stage1_output)
+        # Stage 1: Catalyst & Macro Context (now with cross-asset data)
+        stage1_output = self._stage1_catalyst_context(regime, catalysts, cross_asset_text)
+
+        # Stage 2: Market Regime Deep Analysis (now with cross-asset data)
+        stage2_output = self._stage2_regime_analysis(regime, stage1_output, cross_asset_text)
 
         self.session_context = SessionContext(
             session_id=session_id,
             regime=regime,
             catalysts=catalysts,
+            cross_asset_data=cross_asset_data,
             stage1_output=stage1_output,
             stage2_output=stage2_output,
         )
@@ -108,12 +102,12 @@ class LLMPipeline:
         return self.session_context
 
     def _stage1_catalyst_context(
-        self, regime: MarketRegime, catalysts: CatalystContext
+        self, regime: MarketRegime, catalysts: CatalystContext, cross_asset_text: str = ""
     ) -> str:
         """
         Stage 1: Analyze the catalyst environment for the week.
-        Uses web search for real-time macro calendar, news, and geopolitical data.
-        Falls back to training knowledge if search fails.
+        Uses web search to pull real-time macro calendar, news, and geopolitical data.
+        Now includes cross-asset market data (bonds, credit, commodities, dollar, breadth).
         """
 
         system = """You are a macro strategist at a professional trading desk. Your job is to 
@@ -121,10 +115,14 @@ assess the current catalyst environment and its impact on trading conditions.
 
 You MUST use web search to find:
 1. This week's economic calendar (CPI, PPI, FOMC, NFP, PCE, GDP, ISM, retail sales, etc.)
-2. Any active geopolitical situations affecting markets
+2. Any active geopolitical situations affecting markets (conflicts, trade disputes, sanctions, political crises)
 3. Recent market-moving news from the past 48 hours
 
-Search for "US economic calendar this week" and "market news today" proactively.
+Search for these proactively — do not rely on memory for dates or current events.
+
+You have been given real quantitative cross-asset data — USE IT to validate or contradict what
+web search tells you. For example, if news says "risk-off" but HYG is rallying, note that divergence.
+The numbers don't lie — prioritize quantitative data over narrative when they conflict.
 
 You think in terms of risk events, historical analogs, and probability-weighted outcomes.
 You never hedge with vague language — you state your assessment directly.
@@ -134,27 +132,14 @@ Output format: Structured analysis with clear sections. No fluff."""
         earnings_str = "\n".join([
             f"  - {e.ticker} on {e.date} {'(BELLWETHER — affects: ' + ', '.join(e.affected_tickers) + ')' if e.is_bellwether else ''}"
             for e in catalysts.earnings_this_week
-        ]) or "  None detected"
-
-        # Safe formatting for sector leaders/laggards
-        leaders_str = ', '.join([
-            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
-            for s in regime.sector_leaders
-            if s.performance_1w is not None
-        ]) or 'N/A'
-
-        laggards_str = ', '.join([
-            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
-            for s in regime.sector_laggards
-            if s.performance_1w is not None
-        ]) or 'N/A'
+        ]) or "  None in the next 14 days"
 
         user = f"""Analyze the catalyst environment for this week's trading.
 
-CRITICAL: Search the web for:
-- "US economic calendar this week" to find scheduled data releases
-- "stock market news today" for recent developments
-- "geopolitical risks markets" for active situations
+CRITICAL: Use web search to find:
+- This week's US economic calendar (search "economic calendar this week" or "US economic data releases this week")  
+- Any active geopolitical risks (search "geopolitical risks markets today" or "market moving news today")
+- Any major central bank decisions globally this week
 
 CURRENT DATE: {datetime.now().strftime('%Y-%m-%d %A')}
 
@@ -169,24 +154,33 @@ EARNINGS UPCOMING (auto-detected from market data):
 {earnings_str}
 
 SECTOR LEADERSHIP:
-- Leaders: {leaders_str}
-- Laggards: {laggards_str}
+- Leaders: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_leaders if s.performance_1w is not None]) or 'N/A'}
+- Laggards: {', '.join([f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_laggards if s.performance_1w is not None]) or 'N/A'}
+
+{cross_asset_text}
 
 After searching, provide:
 1. THIS WEEK'S DOMINANT NARRATIVE — What is the market focused on?
-2. SCHEDULED MACRO EVENTS — List every data release and Fed event this week with dates and expected impact
-3. GEOPOLITICAL ASSESSMENT — Active situations with closest historical analogs
+2. SCHEDULED MACRO EVENTS — List every data release and Fed event this week with dates, expected impact (low/moderate/high/extreme), and historical context for how surprise outcomes typically move markets
+3. GEOPOLITICAL ASSESSMENT — For any active situations, identify the closest historical analog and estimate impact magnitude/duration/sector effects. Include:
+   - Classification (military conflict / trade war / banking crisis / political instability / sanctions)
+   - Historical analog with specific market data (e.g., "Russia-Ukraine 2022: SPY -6.2%, recovery 28 days")
+   - Which sectors are helped/hurt
 4. POSITIONING BIAS — risk-on / risk-off / neutral / wait-for-catalyst, with reasoning
 5. SECTORS TO FAVOR/AVOID — Based on the catalyst environment
 6. HIDDEN CORRELATION RISKS — Bellwether earnings that could move seemingly unrelated positions"""
 
         return self._call_claude_with_search(system, user, max_tokens=4000)
 
-    def _stage2_regime_analysis(self, regime: MarketRegime, stage1_output: str) -> str:
-        """Stage 2: Deep market regime analysis informed by catalyst context."""
+    def _stage2_regime_analysis(self, regime: MarketRegime, stage1_output: str, cross_asset_text: str = "") -> str:
+        """Stage 2: Deep market regime analysis informed by catalyst context and cross-asset data."""
 
         system = """You are a market structure analyst. You specialize in identifying market regimes,
 trend health, and the interaction between technical conditions and macro catalysts.
+
+You have been given real quantitative cross-asset data from bonds, credit, commodities, dollar,
+and breadth instruments. USE THIS DATA to validate your regime assessment. Cross-asset confirmation
+dramatically increases conviction. Cross-asset divergence is a warning signal.
 
 Your analysis should be actionable — tell the trader what types of setups to favor
 in this environment and what to avoid. Be specific about why."""
@@ -206,15 +200,17 @@ MARKET DATA:
 - Term Structure: {regime.vix_term_structure}
 - Overall Bias: {regime.bias.value}
 
+{cross_asset_text}
+
 Provide:
-1. REGIME CLASSIFICATION — What type of market are we in? (trending, range-bound, transitional, crisis)
-2. TREND HEALTH — Is the trend healthy or showing signs of exhaustion? What are the warning signs?
+1. REGIME CLASSIFICATION — What type of market are we in? Use the cross-asset signals to confirm or challenge. If bonds say "risk-off" but equities say "range-bound", identify that divergence.
+2. TREND HEALTH — Is the trend healthy or showing signs of exhaustion? What are the warning signs? Use breadth data (IWM, RSP) and credit (HYG) to assess participation.
 3. SETUP PREFERENCES — Which setup types are highest probability in this regime?
    - Breakouts vs. mean reversion vs. momentum continuation
    - Day trade vs. swing suitability
-4. RISK PARAMETERS — How should position sizing and stop placement adapt to this regime?
-5. KEY LEVELS — What SPY/QQQ levels would change the regime if broken?
-6. WHAT WOULD CHANGE YOUR MIND — What development would shift the regime?"""
+4. RISK PARAMETERS — How should position sizing and stop placement adapt to this regime? Use ATR and VIX for sizing guidance.
+5. KEY LEVELS — What SPY/QQQ levels would change the regime if broken? Include cross-asset trigger levels (e.g., "if TLT breaks above X, recession trade accelerates").
+6. WHAT WOULD CHANGE YOUR MIND — What development would shift the regime? Include cross-asset triggers."""
 
         return self._call_claude(system, user, max_tokens=2500)
 
@@ -237,10 +233,15 @@ Provide:
         if not self.session_context:
             raise RuntimeError("Session context not initialized. Run run_session_stages() first.")
 
+        # Stage 3: Technical Analysis
         stage3 = self._stage3_technical(indicators, direction, trade_type)
+
+        # Stage 4: Risk Scenario Modeling
         stage4 = self._stage4_risk_scenarios(
             indicators, stage3, confidence, direction, correlated_bellwethers or []
         )
+
+        # Stage 5: Trade Plan Synthesis
         plan = self._stage5_synthesis(
             indicators, stage3, stage4, confidence,
             options_rec, trade_type, direction,
@@ -421,6 +422,7 @@ Produce the final trade plan as JSON. Be extremely specific with price levels.""
 
         # Parse the JSON response
         try:
+            # Extract JSON from response (handle markdown code blocks)
             json_str = raw
             if "```json" in raw:
                 json_str = raw.split("```json")[1].split("```")[0]
@@ -429,6 +431,7 @@ Produce the final trade plan as JSON. Be extremely specific with price levels.""
 
             plan_data = json.loads(json_str.strip())
         except (json.JSONDecodeError, IndexError):
+            # Fallback: create plan from raw text
             plan_data = {
                 "thesis": raw[:500],
                 "setup_type": "manual_review",
@@ -444,6 +447,7 @@ Produce the final trade plan as JSON. Be extremely specific with price levels.""
                 "historical_analog_score": 50,
             }
 
+        # Update historical analog score in confidence
         analog_score = plan_data.get("historical_analog_score", 50)
         confidence.historical_analog = min(100, max(0, analog_score))
 
@@ -511,7 +515,7 @@ Provide:
 Identify systematic patterns, biases, and areas for improvement.
 Be analytical and data-driven. Reference specific numbers."""
 
-        trades_str = json.dumps(trades[:20], indent=2, default=str)
+        trades_str = json.dumps(trades[:20], indent=2, default=str)  # cap at 20 trades
 
         user = f"""Review this week's trading performance:
 
@@ -540,10 +544,13 @@ Analyze:
     ) -> str:
         """
         Interactive chat with full session context.
+        The user can ask follow-up questions about the week's analysis,
+        specific trade plans, market conditions, or strategy.
         """
         if not self.session_context:
             raise RuntimeError("No active session. Initialize session first.")
 
+        # Build the context block that gives the LLM full awareness
         context_parts = []
 
         context_parts.append(f"""=== STAGE 1: CATALYST & MACRO CONTEXT ===
@@ -553,27 +560,20 @@ Analyze:
 {self.session_context.stage2_output}""")
 
         regime = self.session_context.regime
-
-        leaders_str = ', '.join(
-            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
-            for s in regime.sector_leaders
-            if s.performance_1w is not None
-        ) or 'N/A'
-
-        laggards_str = ', '.join(
-            f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)"
-            for s in regime.sector_laggards
-            if s.performance_1w is not None
-        ) or 'N/A'
-
         context_parts.append(f"""=== CURRENT MARKET DATA ===
 SPY Regime: {regime.spy_regime.value}
 QQQ Regime: {regime.qqq_regime.value}
 VIX: {regime.vix} (Percentile: {regime.vix_percentile}%, Regime: {regime.volatility_regime})
 Term Structure: {regime.vix_term_structure}
 Market Bias: {regime.bias.value}
-Sector Leaders: {leaders_str}
-Sector Laggards: {laggards_str}""")
+Sector Leaders: {', '.join(f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_leaders if s.performance_1w is not None) or 'N/A'}
+Sector Laggards: {', '.join(f"{s.sector} ({s.etf}: {s.performance_1w:+.1f}%)" for s in regime.sector_laggards if s.performance_1w is not None) or 'N/A'}""")
+
+        # Add cross-asset data to chat context
+        if self.session_context.cross_asset_data:
+            from app.data.cross_asset import format_cross_asset_for_llm
+            cross_asset_text = format_cross_asset_for_llm(self.session_context.cross_asset_data)
+            context_parts.append(cross_asset_text)
 
         catalysts = self.session_context.catalysts
         earnings_str = ", ".join(
@@ -597,7 +597,8 @@ Earnings This Week: {earnings_str}
                     f"Confidence: {comp} | "
                     f"Thesis: {str(p.get('thesis', '?'))[:120]}"
                 )
-            context_parts.append("=== TRADE PLANS THIS SESSION ===\n" + "\n".join(plans_summary))
+            context_parts.append(f"""=== TRADE PLANS THIS SESSION ===
+{chr(10).join(plans_summary)}""")
 
         if performance_stats and performance_stats.get("total_trades", 0) > 0:
             context_parts.append(f"""=== YOUR PERFORMANCE (last {performance_stats.get('period_days', 30)} days) ===
@@ -610,13 +611,15 @@ Total P/L: {performance_stats.get('total_pnl_pct')}%""")
         full_context = "\n\n".join(context_parts)
 
         system = f"""You are a senior trading strategist having an interactive conversation with a trader.
-You have complete access to today's session analysis, market data, and the trader's plans and performance.
+You have complete access to today's session analysis, market data, cross-asset data (bonds, credit,
+commodities, dollar, breadth), and the trader's plans and performance.
 
 YOUR CONTEXT (reference this to answer questions):
 {full_context}
 
 RULES:
 - Be direct and specific. When you reference a level, state the price. When you cite data, use the numbers.
+- When discussing intermarket relationships, reference the actual cross-asset data you have (e.g., "TLT is +1.2% this week confirming the flight to safety thesis").
 - If asked about a specific trade plan, reference the actual thesis, levels, and confidence scores.
 - If asked "what if" scenarios, reason through them using the indicator and regime data you have.
 - If asked about risk, quantify it using ATR, VIX, and historical analogs from the catalyst analysis.
