@@ -1,30 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import api, { SessionResponse, AnalysisResponse } from "@/lib/api";
+import { useSession } from "@/components/SessionProvider";
+import api, { AnalysisResponse } from "@/lib/api";
 
 export default function Dashboard() {
-  const [session, setSession] = useState<SessionResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { sessionData: session, isLoading: loading, error: sessionError, initSession, isActive } = useSession();
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [ticker, setTicker] = useState("");
   const [direction, setDirection] = useState("bullish");
   const [tradeType, setTradeType] = useState("swing");
   const [analyzing, setAnalyzing] = useState(false);
-
-  const initSession = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.initSession([]);
-      setSession(res);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [error, setError] = useState<string | null>(null);
 
   const quickAnalyze = async () => {
     if (!ticker.trim()) return;
@@ -56,7 +43,7 @@ export default function Dashboard() {
           >
             {loading ? "Initializing... (fetching market data)" : "Initialize Session"}
           </button>
-          {error && <p className="text-accent-red text-sm mt-4">{error}</p>}
+          {(error || sessionError) && <p className="text-accent-red text-sm mt-4">{error || sessionError}</p>}
         </div>
       ) : (
         <>

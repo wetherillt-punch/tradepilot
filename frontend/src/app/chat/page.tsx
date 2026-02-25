@@ -1,23 +1,17 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useSession } from "@/components/SessionProvider";
 import api, { ChatMessage } from "@/lib/api";
 
 export default function ChatPage() {
+  const { isActive: hasSession } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasSession, setHasSession] = useState<boolean | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  // Check for active session on mount
-  useEffect(() => {
-    api.health()
-      .then(() => setHasSession(true))
-      .catch(() => setHasSession(false));
-  }, []);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
