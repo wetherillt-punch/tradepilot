@@ -60,7 +60,7 @@ class LLMPipeline:
         # Extract all text blocks from the response (web search returns mixed content)
         text_parts = []
         for block in message.content:
-            if hasattr(block, "text"):
+            if hasattr(block, "text") and block.text is not None and isinstance(block.text, str):
                 text_parts.append(block.text)
         return "\n".join(text_parts)
 
