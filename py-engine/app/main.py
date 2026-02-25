@@ -256,8 +256,8 @@ async def analyze_with_upload(
 
         # Save to MongoDB
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict)
-        plan_dict["id"] = plan_id
+        plan_id = await db.save_trade_plan(plan_dict.copy())
+        plan_dict["id"] = str(plan_id)
 
         return {
             "plan": plan_dict,
@@ -335,8 +335,8 @@ async def analyze_quick(req: QuickAnalyzeRequest):
         )
 
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict)
-        plan_dict["id"] = plan_id
+        plan_id = await db.save_trade_plan(plan_dict.copy())
+        plan_dict["id"] = str(plan_id)
 
         return {
             "plan": plan_dict,
