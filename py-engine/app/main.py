@@ -23,6 +23,7 @@ from app.catalysts.engine import CatalystEngine
 from app.options.strategy import OptionsStrategyEngine
 from app.routes.llm_pipeline import LLMPipeline
 from app.data.cross_asset import fetch_cross_asset_data
+from app.routes.plans_v2 import router as plans_v2_router
 from app.models.schemas import (
     Timeframe, TradeType, Direction, EventRisk
 )
@@ -43,6 +44,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount v2 API routes
+app.include_router(plans_v2_router)
 
 # Initialize engines
 regime_engine = RegimeEngine()
@@ -256,8 +260,8 @@ async def analyze_with_upload(
 
         # Save to MongoDB
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict.copy())
-        plan_dict["id"] = str(plan_id)
+        plan_id = await db.save_trade_plan(plan_dict)
+        plan_dict["id"] = plan_id
 
         return {
             "plan": plan_dict,
@@ -335,8 +339,8 @@ async def analyze_quick(req: QuickAnalyzeRequest):
         )
 
         plan_dict = plan.model_dump(mode="json")
-        plan_id = await db.save_trade_plan(plan_dict.copy())
-        plan_dict["id"] = str(plan_id)
+        plan_id = await db.save_trade_plan(plan_dict)
+        plan_dict["id"] = plan_id
 
         return {
             "plan": plan_dict,

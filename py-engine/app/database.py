@@ -23,7 +23,7 @@ class Database:
         self.client = AsyncIOMotorClient(mongo_uri)
         self.db = self.client[os.getenv("MONGODB_DB", "tradepilot")]
 
-        # Create indexes
+        # Create indexes — existing collections
         await self.db.trade_plans.create_index([("created_at", DESCENDING)])
         await self.db.trade_plans.create_index("ticker")
         await self.db.trade_plans.create_index("setup_type")
@@ -32,6 +32,12 @@ class Database:
         await self.db.journal.create_index("trade_plan_id")
         await self.db.historical_events.create_index("event_type")
         await self.db.historical_events.create_index("date")
+
+        # Create indexes — v2 plans collection
+        await self.db.plans_v2.create_index([("session_id", 1), ("date", 1)])
+        await self.db.plans_v2.create_index([("date", 1), ("status", 1)])
+        await self.db.plans_v2.create_index([("ticker", 1), ("date", 1)])
+        await self.db.plans_v2.create_index("status")
 
     async def disconnect(self):
         if self.client:
@@ -212,6 +218,149 @@ class Database:
 
     async def get_cached_session(self, session_id: str) -> Optional[dict]:
         return await self.db.sessions.find_one({"session_id": session_id})
+
+    # ─── V2 Plans (lifecycle-tracked) ──────────────────────────────────────
+
+    async def create_plan_v2(self, plan: dict) -> str:
+        """Create a new v2 plan. Returns plan ID."""
+        plan["created_at"] = datetime.utcnow()
+        plan["updated_at"] = datetime.utcnow()
+        result = await self.db.plans_v2.insert_one(plan)
+        return str(result.inserted_id)
+
+    async def get_plan_v2(self, plan_id: str) -> Optional[dict]:
+        """Get a single plan by ID."""
+        doc = await self.db.plans_v2.find_one({"_id": ObjectId(plan_id)})
+        if doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    async def get_plans_by_date(self, plan_date: str, status: Optional[str] = None) -> list[dict]:
+        """Get all plans for a given date (YYYY-MM-DD), optionally filtered by status."""
+        query = {"date": plan_date}
+        if status:
+            query["status"] = status
+        cursor = self.db.plans_v2.find(query).sort("created_at", DESCENDING)
+        plans = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            plans.append(doc)
+        return plans
+
+    async def get_plans_by_session(self, session_id: str) -> list[dict]:
+        """Get all plans for a session."""
+        cursor = self.db.plans_v2.find({"session_id": session_id}).sort("created_at", DESCENDING)
+        plans = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            plans.append(doc)
+        return plans
+
+    async def update_plan_v2(self, plan_id: str, updates: dict) -> bool:
+        """Update a plan. Returns True if updated."""
+        updates["updated_at"] = datetime.utcnow()
+        result = await self.db.plans_v2.update_one(
+            {"_id": ObjectId(plan_id)},
+            {"$set": updates}
+        )
+        return result.modified_count > 0
+
+    async def add_plan_exit(self, plan_id: str, exit_data: dict) -> bool:
+        """Push an exit event to the plan's exits array and update remaining contracts."""
+        result = await self.db.plans_v2.update_one(
+            {"_id": ObjectId(plan_id)},
+            {
+                "$push": {"exits": exit_data},
+                "$set": {
+                    "remaining_contracts": exit_data.get("remaining_after", 0),
+                    "updated_at": datetime.utcnow(),
+                }
+            }
+        )
+        return result.modified_count > 0
+
+    async def get_plans_history(self, days: int = 30) -> list[dict]:
+        """Get plan summaries grouped by date for the history view."""
+        cutoff = datetime.utcnow().replace(hour=0, minute=0, second=0)
+        from datetime import timedelta
+        cutoff_str = (cutoff - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        cursor = self.db.plans_v2.find(
+            {"date": {"$gte": cutoff_str}}
+        ).sort("date", DESCENDING)
+
+        plans = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            plans.append(doc)
+        return plans
+
+    async def search_plans_by_ticker(self, ticker: str, limit: int = 50) -> list[dict]:
+        """Search all plans for a ticker across all dates."""
+        cursor = (
+            self.db.plans_v2
+            .find({"ticker": ticker.upper()})
+            .sort("date", DESCENDING)
+            .limit(limit)
+        )
+        plans = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            plans.append(doc)
+        return plans
+
+    # ─── Settings ──────────────────────────────────────────────────────────
+
+    async def get_settings(self) -> dict:
+        """Get user settings. Creates defaults if none exist."""
+        doc = await self.db.settings.find_one({"_type": "user_settings"})
+        if doc:
+            doc["_id"] = str(doc["_id"])
+            return doc
+
+        # Create defaults
+        defaults = {
+            "_type": "user_settings",
+            "daily_loss_limit": -500,
+            "account_size": 33000,
+            "risk_per_trade_pct": 2.5,
+            "confidence_threshold": 50,
+            "commission_per_contract": 0.65,
+            "revenge_cooldown_minutes": 10,
+            "quick_check_cooldown_minutes": 2,
+            "updated_at": datetime.utcnow(),
+        }
+        await self.db.settings.insert_one(defaults.copy())
+        defaults.pop("_id", None)
+        return defaults
+
+    async def update_settings(self, updates: dict) -> bool:
+        """Update user settings."""
+        updates["updated_at"] = datetime.utcnow()
+        result = await self.db.settings.update_one(
+            {"_type": "user_settings"},
+            {"$set": updates},
+            upsert=True
+        )
+        return result.modified_count > 0 or result.upserted_id is not None
+
+    # ─── Watchlist ─────────────────────────────────────────────────────────
+
+    async def get_watchlist(self) -> list[str]:
+        """Get saved watchlist tickers."""
+        doc = await self.db.watchlist.find_one({"_type": "default_watchlist"})
+        if doc:
+            return doc.get("tickers", [])
+        return ["SPY", "QQQ", "IWM", "DIA", "NVDA", "MSFT", "AAPL", "XLF"]
+
+    async def update_watchlist(self, tickers: list[str]) -> bool:
+        """Update saved watchlist."""
+        result = await self.db.watchlist.update_one(
+            {"_type": "default_watchlist"},
+            {"$set": {"tickers": [t.upper() for t in tickers], "updated_at": datetime.utcnow()}},
+            upsert=True
+        )
+        return True
 
 
 # Singleton
