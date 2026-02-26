@@ -47,6 +47,10 @@ app.add_middleware(
 
 # Mount v2 API routes
 app.include_router(plans_v2_router)
+@app.get("/debug/routes")
+async def debug_routes():
+    routes = [{"path": r.path, "methods": r.methods} for r in app.routes]
+    return {"route_count": len(routes), "routes": routes}
 
 # Initialize engines
 regime_engine = RegimeEngine()
